@@ -73,8 +73,8 @@
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 .spjs-ex-btn:hover { background: rgba(255, 213, 74, 0.2); color: var(--spjs-accent); border-color: rgba(255, 213, 74, 0.4); }
-/* 学習モードかつ字幕にホバーしている間だけ表示 */
-.spjs-learn .spjs-subbox:hover .spjs-ex-btn { display: block; }
+/* 学習モードかつプレーヤーにマウスがある間だけ表示(字幕→ボタン間の隙間で消えないように) */
+.spjs-learn.spjs-hover .spjs-ex-btn { display: block; }
 
 /* 日本語ぼかしモード */
 .spjs-blurja .spjs-ja { filter: blur(6px); transition: filter 0.15s; }

@@ -241,6 +241,7 @@
       const r = container.getBoundingClientRect();
       const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
       ui.chip.classList.toggle('spjs-show', inside);
+      ui.root.classList.toggle('spjs-hover', inside); // 「解説」ボタン等のプレーヤーホバー連動表示用
     }, { passive: true });
 
     firstRunHint();
