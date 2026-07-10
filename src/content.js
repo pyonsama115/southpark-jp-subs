@@ -182,7 +182,7 @@
     // 字幕の右横に「解説」ボタン(学習モード時のみCSSで表示)
     const exBtn = el('button', 'spjs-ex-btn', '解説');
     exBtn.title = 'このセリフの塊・文法をAI解説 (E)';
-    exBtn.addEventListener('click', (e) => { e.stopPropagation(); explainCurrentCue(); });
+    exBtn.addEventListener('click', (e) => { e.stopPropagation(); e.currentTarget.blur(); explainCurrentCue(); });
     subBox.append(exBtn);
     subWrap.append(subBox);
 
@@ -533,6 +533,7 @@
       const b = e.target.closest('.spjs-chip-btn');
       if (!b) return;
       e.stopPropagation();
+      b.blur(); // フォーカスが残るとスペースキーがボタン再押下になり再生/停止を奪う
       switch (b.dataset.id) {
         case 'mode': {
           // 学習(英日+辞書) → 日本語のみ → 英語のみ → オフ の一本トグル
@@ -632,7 +633,7 @@
     head.append(el('span', '', 'セリフ一覧(クリックでジャンプ)'));
     const close = el('button', 'spjs-dr-close', '✕');
     close.title = '閉じる (T)';
-    close.addEventListener('click', toggleDrawer);
+    close.addEventListener('click', (e) => { e.currentTarget.blur(); toggleDrawer(); });
     head.append(close);
     d.append(head);
     const list = el('div', 'spjs-dr-list');
@@ -704,7 +705,7 @@
     const head = el('div', 'spjs-dr-title');
     head.append(el('span', '', '💡 塊・文法解説'));
     const close = el('button', 'spjs-dr-close', '✕');
-    close.addEventListener('click', () => panel.classList.add('spjs-hidden'));
+    close.addEventListener('click', (e) => { e.currentTarget.blur(); panel.classList.add('spjs-hidden'); });
     head.append(close);
     const enq = el('div', 'spjs-ex-en', cue.en.replace(/\n/g, ' '));
     const body = el('div', 'spjs-ex-body', '');
