@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<header>
+  <h1>South Park 日本語字幕</h1>
+  <label class="switch" title="拡張の有効/無効">
+    <input type="checkbox" id="enabled">
+    <span class="slider"></span>
+  </label>
+</header>
+
+<nav>
+  <button class="tab active" data-tab="settings">設定</button>
+  <button class="tab" data-tab="wordbook">単語帳</button>
+</nav>
+
+<main id="tab-settings" class="pane active">
+  <section>
+    <h2>字幕表示</h2>
+    <div class="seg" id="subMode">
+      <button data-v="both">英日両方</button>
+      <button data-v="ja">日本語</button>
+      <button data-v="en">英語</button>
+      <button data-v="off">オフ</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>学習モード</h2>
+    <label class="row"><input type="checkbox" id="learnMode"> 学習モード(英語主役・未知語ハイライト・単語辞書)</label>
+    <label class="row"><input type="checkbox" id="hoverPause"> 字幕ホバーで一時停止</label>
+    <label class="row"><input type="checkbox" id="blurJa"> 日本語をぼかす(ホバーで表示)</label>
+    <div class="row">
+      <span class="lbl">オートポーズ</span>
+      <div class="seg small" id="autoPause">
+        <button data-v="off">オフ</button>
+        <button data-v="all">毎セリフ</button>
+        <button data-v="smart">未知語のみ</button>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>見た目</h2>
+    <div class="row">
+      <span class="lbl">文字サイズ</span>
+      <div class="seg small" id="fontScale">
+        <button data-v="0.85">小</button>
+        <button data-v="1">中</button>
+        <button data-v="1.2">大</button>
+      </div>
+    </div>
+    <div class="row">
+      <span class="lbl">背景帯の濃さ</span>
+      <input type="range" id="bgOpacity" min="0" max="0.9" step="0.05">
+    </div>
+  </section>
+
+  <section>
+    <h2>翻訳エンジン(Chrome内蔵・無料)</h2>
+    <div class="row status">
+      <span id="modelStatus">状態確認中…</span>
+      <button id="downloadModel" class="primary hidden">モデルをダウンロード</button>
+    </div>
+    <progress id="dlProgress" max="1" value="0" class="hidden"></progress>
+    <div class="row status"><span id="trProgress"></span></div>
+  </section>
+</main>
+
+<main id="tab-wordbook" class="pane">
+  <div class="wb-head">
+    <span id="wbCount"></span>
+    <button id="wbExport">CSVエクスポート</button>
+  </div>
+  <div id="wbList"></div>
+</main>
+
+<script src="popup.js"></script>
+</body>
+</html>

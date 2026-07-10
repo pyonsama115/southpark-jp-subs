@@ -1,0 +1,200 @@
+/* South Park 日本語字幕 - オーバーレイUI
+   デザイントークン: 暗色ガラス調パネル / 白文字+黒縁 / 角丸10px / 控えめ影 */
+
+.spjs-root {
+  --spjs-fs: 22px;
+  --spjs-bg: rgba(0, 0, 0, 0.55);
+  --spjs-panel: rgba(16, 18, 24, 0.88);
+  --spjs-border: rgba(255, 255, 255, 0.14);
+  --spjs-accent: #ffd54a;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2147483000;
+  font-family: "Hiragino Sans", "Noto Sans JP", "Helvetica Neue", Arial, sans-serif;
+}
+.spjs-hidden { display: none !important; }
+
+/* ---------- 字幕本体 ---------- */
+.spjs-subwrap {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: 6%;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.spjs-subbox {
+  pointer-events: auto;
+  max-width: 80%;
+  background: var(--spjs-bg);
+  border-radius: 10px;
+  padding: 0.35em 0.75em 0.4em;
+  text-align: center;
+  line-height: 1.45;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(2px);
+}
+.spjs-en, .spjs-ja {
+  color: #fff;
+  text-shadow: 0 0 2px #000, 0 1px 2px #000, 0 2px 6px rgba(0, 0, 0, 0.7);
+  white-space: pre-wrap;
+}
+/* 視聴モード: 日本語が主役 */
+.spjs-ja { font-size: var(--spjs-fs); font-weight: 600; }
+.spjs-en { font-size: calc(var(--spjs-fs) * 0.7); font-weight: 500; color: #ddd; }
+.spjs-enline { display: block; }
+/* 学習モード: 英語が主役に反転 */
+.spjs-learn .spjs-en { font-size: var(--spjs-fs); font-weight: 600; color: #fff; }
+.spjs-learn .spjs-ja { font-size: calc(var(--spjs-fs) * 0.72); font-weight: 500; color: #e8e8e8; }
+.spjs-pending { opacity: 0.45; font-style: italic; }
+
+/* 日本語ぼかしモード */
+.spjs-blurja .spjs-ja { filter: blur(6px); transition: filter 0.15s; }
+.spjs-blurja .spjs-subbox:hover .spjs-ja { filter: none; }
+
+/* 単語 */
+.spjs-w { cursor: pointer; border-radius: 3px; transition: background 0.12s; }
+.spjs-w:hover { background: rgba(255, 213, 74, 0.28); }
+.spjs-learn .spjs-unknown {
+  text-decoration: underline dotted rgba(255, 213, 74, 0.85) 2px;
+  text-underline-offset: 3px;
+}
+
+/* ---------- 辞書ポップアップ ---------- */
+.spjs-dictpop {
+  position: absolute;
+  pointer-events: auto;
+  min-width: 200px;
+  max-width: 320px;
+  background: var(--spjs-panel);
+  border: 1px solid var(--spjs-border);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  padding: 10px 12px;
+  color: #f2f2f2;
+  font-size: calc(var(--spjs-fs) * 0.62);
+  line-height: 1.5;
+  text-align: left;
+  animation: spjs-fadein 0.12s ease-out;
+  z-index: 10;
+}
+@keyframes spjs-fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+.spjs-dp-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.spjs-dp-word { font-size: 1.25em; font-weight: 700; color: #fff; }
+.spjs-dp-badge {
+  font-size: 0.68em; font-weight: 600; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--spjs-border);
+}
+.spjs-dp-basic { background: rgba(90, 200, 120, 0.22); color: #9fe6b5; }
+.spjs-dp-common { background: rgba(255, 213, 74, 0.18); color: #ffe28a; }
+.spjs-dp-known { background: rgba(120, 160, 255, 0.2); color: #b9ccff; }
+.spjs-dp-pron { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.spjs-dp-kana { color: var(--spjs-accent); font-weight: 600; }
+.spjs-dp-ipa { color: #aaa; font-size: 0.85em; }
+.spjs-dp-lemma { color: #bbb; font-size: 0.85em; margin-bottom: 2px; }
+.spjs-dp-senses { margin: 2px 0; }
+.spjs-dp-sense { padding: 1px 0; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.spjs-dp-sense:first-child { border-top: none; }
+.spjs-dp-hint { margin-top: 6px; color: #888; font-size: 0.75em; }
+
+/* ---------- コントロールチップ ---------- */
+.spjs-chip {
+  position: absolute;
+  top: 14px; right: 14px;
+  display: flex; gap: 4px;
+  background: var(--spjs-panel);
+  border: 1px solid var(--spjs-border);
+  border-radius: 999px;
+  padding: 4px 6px;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 0.2s, transform 0.2s;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.spjs-chip.spjs-show { opacity: 1; transform: none; }
+.spjs-chip-btn {
+  all: unset;
+  cursor: pointer;
+  width: 30px; height: 30px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  color: #ddd;
+  font-size: 14px;
+  font-family: inherit;
+  font-weight: 600;
+}
+.spjs-chip-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.spjs-chip-btn.spjs-on { background: rgba(255, 213, 74, 0.22); color: var(--spjs-accent); }
+
+/* ---------- トランスクリプトドロワー ---------- */
+.spjs-drawer {
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  width: min(360px, 42%);
+  background: rgba(14, 16, 22, 0.92);
+  border-left: 1px solid var(--spjs-border);
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  backdrop-filter: blur(6px);
+}
+.spjs-dr-title {
+  padding: 10px 14px;
+  color: #ccc; font-size: 12px; font-weight: 600;
+  border-bottom: 1px solid var(--spjs-border);
+  flex: none;
+}
+.spjs-dr-list { overflow-y: auto; flex: 1; overscroll-behavior: contain; }
+.spjs-dr-row {
+  display: flex; gap: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.spjs-dr-row:hover { background: rgba(255, 255, 255, 0.07); }
+.spjs-dr-cur { background: rgba(255, 213, 74, 0.13); border-left: 3px solid var(--spjs-accent); }
+.spjs-dr-time { color: #888; font-size: 11px; flex: none; padding-top: 2px; font-variant-numeric: tabular-nums; }
+.spjs-dr-en { color: #eee; font-size: 12.5px; line-height: 1.4; }
+.spjs-dr-ja { color: #9fc3ff; font-size: 12px; line-height: 1.4; margin-top: 1px; }
+
+/* ---------- チートシート / トースト ---------- */
+.spjs-cheat {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--spjs-panel);
+  border: 1px solid var(--spjs-border);
+  border-radius: 12px;
+  padding: 14px 18px 16px;
+  pointer-events: auto;
+  color: #eee;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  min-width: 300px;
+}
+.spjs-cheat .spjs-dr-title { border-bottom: none; padding: 0 0 8px; font-size: 14px; color: #fff; }
+.spjs-cheat-row { display: flex; gap: 12px; align-items: center; padding: 3px 0; font-size: 13px; }
+.spjs-cheat-row kbd {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--spjs-border);
+  border-radius: 5px;
+  padding: 1px 8px;
+  font-size: 12px;
+  min-width: 60px;
+  text-align: center;
+  font-family: inherit;
+}
+.spjs-toast {
+  position: absolute;
+  top: 16px; left: 50%;
+  transform: translateX(-50%);
+  background: var(--spjs-panel);
+  border: 1px solid var(--spjs-border);
+  border-radius: 999px;
+  color: #fff;
+  font-size: 13px;
+  padding: 7px 16px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  animation: spjs-fadein 0.15s ease-out;
+}

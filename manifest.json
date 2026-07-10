@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "South Park 日本語字幕",
+  "version": "1.0.0",
+  "description": "southparkstudios.com の英語字幕をオンデバイス翻訳で日本語表示。学習モード(単語ホバー辞書・オートポーズ)付き。",
+  "permissions": ["storage", "offscreen"],
+  "host_permissions": ["https://www.southparkstudios.com/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.southparkstudios.com/*"],
+      "js": [
+        "src/common.js",
+        "src/lemma.js",
+        "src/kana.js",
+        "src/dict.js",
+        "src/translator.js",
+        "src/content.js"
+      ],
+      "css": ["src/overlay.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["data/*"],
+      "matches": ["https://www.southparkstudios.com/*"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "South Park 日本語字幕"
+  },
+  "icons": {
+    "128": "icons/icon128.png",
+    "48": "icons/icon48.png",
+    "16": "icons/icon16.png"
+  }
+}
