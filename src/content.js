@@ -234,14 +234,25 @@
     ui.dictPop.addEventListener('mouseenter', () => clearTimeout(ui.hideTimer));
     ui.dictPop.addEventListener('mouseleave', hideDictSoon);
 
-    // コントロールチップ: プレーヤー上にマウスがある間は常時表示
+    // コントロールチップ/解説ボタン: プレーヤー上でマウスが動いている間だけ表示。
+    // 一定時間動きが無ければ隠す(全画面では常にプレーヤー内なので、内側判定だけだと出っぱなしになる)
     // (サイトUIのレイヤにmousemoveを食われるためdocumentレベルで判定)
+    let idleTimer = null;
+    const hideHoverUI = () => {
+      ui.chip.classList.remove('spjs-show');
+      ui.root.classList.remove('spjs-hover');
+    };
     document.addEventListener('mousemove', (e) => {
       if (!ui || !container.isConnected) return;
       const r = container.getBoundingClientRect();
       const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-      ui.chip.classList.toggle('spjs-show', inside);
-      ui.root.classList.toggle('spjs-hover', inside); // 「解説」ボタン等のプレーヤーホバー連動表示用
+      clearTimeout(idleTimer);
+      if (!inside) { hideHoverUI(); return; }
+      ui.chip.classList.add('spjs-show');
+      ui.root.classList.add('spjs-hover');
+      // チップ/字幕/パネル類にホバー中は消さない(操作中に消えると不便)
+      const overUI = e.target.closest?.('.spjs-chip, .spjs-subbox, .spjs-ex-btn, .spjs-dictpop, .spjs-explain, .spjs-drawer');
+      if (!overUI) idleTimer = setTimeout(hideHoverUI, 2500);
     }, { passive: true });
 
     firstRunHint();
