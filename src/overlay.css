@@ -27,6 +27,7 @@
   transition: right 0.2s, bottom 0.2s;
 }
 .spjs-subbox {
+  position: relative;
   pointer-events: auto;
   max-width: 80%;
   background: var(--spjs-bg);
@@ -50,6 +51,29 @@
 .spjs-learn .spjs-en { font-size: var(--spjs-fs); font-weight: 600; color: #fff; }
 .spjs-learn .spjs-ja { font-size: calc(var(--spjs-fs) * 0.72); font-weight: 500; color: #e8e8e8; }
 .spjs-pending { opacity: 0.45; font-style: italic; }
+
+/* 字幕右横の「解説」ボタン(学習モード時のみ表示) */
+.spjs-ex-btn {
+  all: unset;
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 10px;
+  cursor: pointer;
+  background: var(--spjs-panel);
+  border: 1px solid var(--spjs-border);
+  border-radius: 999px;
+  color: #ddd;
+  font-size: calc(var(--spjs-fs) * 0.5);
+  font-weight: 600;
+  padding: 0.35em 0.9em;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.spjs-ex-btn:hover { background: rgba(255, 213, 74, 0.2); color: var(--spjs-accent); border-color: rgba(255, 213, 74, 0.4); }
+.spjs-learn .spjs-subbox:not(.spjs-hidden) .spjs-ex-btn { display: block; }
 
 /* 日本語ぼかしモード */
 .spjs-blurja .spjs-ja { filter: blur(6px); transition: filter 0.15s; }

@@ -20,18 +20,18 @@
 
 <main id="tab-settings" class="pane active">
   <section>
-    <h2>字幕表示</h2>
-    <div class="seg" id="subMode">
-      <button data-v="both">英日両方</button>
+    <h2>モード</h2>
+    <div class="seg" id="viewMode">
+      <button data-v="learn">学習</button>
       <button data-v="ja">日本語</button>
       <button data-v="en">英語</button>
       <button data-v="off">オフ</button>
     </div>
+    <p class="note">学習=英日両方+単語ホバー辞書+未知語ハイライト</p>
   </section>
 
   <section>
-    <h2>学習モード</h2>
-    <label class="row"><input type="checkbox" id="learnMode"> 学習モード(英語主役・未知語ハイライト・単語辞書)</label>
+    <h2>学習モード設定</h2>
     <label class="row"><input type="checkbox" id="hoverPause"> 字幕ホバーで一時停止</label>
     <label class="row"><input type="checkbox" id="blurJa"> 日本語をぼかす(ホバーで表示)</label>
     <div class="row">

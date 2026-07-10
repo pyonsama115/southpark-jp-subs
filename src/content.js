@@ -179,6 +179,11 @@
     const enLine = el('div', 'spjs-en');
     const jaLine = el('div', 'spjs-ja');
     subBox.append(enLine, jaLine);
+    // 字幕の右横に「解説」ボタン(学習モード時のみCSSで表示)
+    const exBtn = el('button', 'spjs-ex-btn', '解説');
+    exBtn.title = 'このセリフの塊・文法をAI解説 (E)';
+    exBtn.addEventListener('click', (e) => { e.stopPropagation(); explainCurrentCue(); });
+    subBox.append(exBtn);
     subWrap.append(subBox);
 
     const chip = buildChip();
@@ -272,6 +277,7 @@
   }
 
   let renderedKey = '';
+  let renderedEnKey = '';
   function renderNow(force) {
     if (!ui || !video) return;
     const t = video.currentTime;
@@ -281,6 +287,7 @@
     updateDrawerHighlight(cue);
 
     const stateKey = cue ? cue.key + '|' + (cue.ja ? 1 : 0) + '|' + settings.subMode + settings.learnMode : 'none';
+    if (force) renderedEnKey = ''; // 設定変更・既知語登録時は英語行も再構築
     if (!force && stateKey === renderedKey) return;
     // cue切替でポップアップを閉じる(ただし読んでいる最中=ホバー中は残す)
     if (stateKey !== renderedKey && !ui.dictPop.matches(':hover') && !ui.subBox.matches(':hover')) {
@@ -297,7 +304,10 @@
     ui.enLine.classList.toggle('spjs-hidden', !showEn);
     ui.jaLine.classList.toggle('spjs-hidden', !showJa);
 
-    if (showEn) renderEnLine(cue);
+    // 英語行はcue/モードが変わった時だけ再構築(翻訳到着のたびに単語spanを
+    // 差し替えるとホバー中の辞書処理が死ぬため)
+    const enKey = cue.key + '|' + settings.subMode + settings.learnMode;
+    if (showEn && enKey !== renderedEnKey) { renderEnLine(cue); renderedEnKey = enKey; }
     if (showJa) ui.jaLine.textContent = cue.ja || (cue.en ? '(翻訳中…)' : '');
     if (showJa && !cue.ja) ui.jaLine.classList.add('spjs-pending'); else ui.jaLine.classList.remove('spjs-pending');
   }
@@ -353,10 +363,14 @@
 
   // ---------- 辞書ポップアップ ----------
   async function showDict(wordEl) {
-    await SPJS_DICT.load();
-    if (!wordEl.isConnected) return; // cueが切り替わって単語が消えた後は出さない
-    clearTimeout(ui.hideTimer);     // 表示中に古い「閉じる」予約が発火しないように
     const word = wordEl.dataset.w;
+    await SPJS_DICT.load();
+    if (!wordEl.isConnected) {
+      // 辞書ロード中に再描画された場合は同じ単語の新しい要素を探す
+      wordEl = ui.enLine.querySelector(`[data-w="${CSS.escape(word)}"]`);
+      if (!wordEl) return;
+    }
+    clearTimeout(ui.hideTimer);     // 表示中に古い「閉じる」予約が発火しないように
     const info = SPJS_DICT.lookup(word);
     const pop = ui.dictPop;
     pop.textContent = '';
@@ -507,8 +521,7 @@
       return b;
     };
     chip.append(
-      mk('mode', '両', '字幕: 日本語/英語/両方/オフ'),
-      mk('learn', '学', '学習モード(単語辞書・未知語ハイライト)'),
+      mk('mode', '学', 'モード切替: 学習(英日+辞書) → 日本語 → 英語 → オフ'),
       mk('explain', '解', 'このセリフの塊・文法をAI解説 (E)'),
       mk('pause', '⏸', 'オートポーズ: オフ/毎セリフ/未知語のみ'),
       mk('replay', '↻', 'このセリフをリプレイ (←)'),
@@ -521,17 +534,10 @@
       e.stopPropagation();
       switch (b.dataset.id) {
         case 'mode': {
-          const order = ['both', 'ja', 'en', 'off'];
-          settings.subMode = order[(order.indexOf(settings.subMode) + 1) % order.length];
-          SPJS.saveSettings(settings); applySettings();
-          toast('字幕: ' + ({ both: '英日両方', ja: '日本語のみ', en: '英語のみ', off: 'オフ' })[settings.subMode]);
+          // 学習(英日+辞書) → 日本語のみ → 英語のみ → オフ の一本トグル
+          cycleMode();
           break;
         }
-        case 'learn':
-          settings.learnMode = !settings.learnMode;
-          SPJS.saveSettings(settings); applySettings();
-          toast('学習モード: ' + (settings.learnMode ? 'ON(単語ホバーで辞書)' : 'OFF'));
-          break;
         case 'pause':
           onKey({ key: 's', target: null, preventDefault() {}, stopImmediatePropagation() {} });
           break;
@@ -549,11 +555,40 @@
     return chip;
   }
 
+  // 表示モードの一本化: learn(英日+辞書) / ja / en / off
+  function currentMode() {
+    if (settings.learnMode) return 'learn';
+    return settings.subMode === 'both' ? 'ja' : settings.subMode; // 非学習のbothはjaに丸める
+  }
+
+  const MODE_DEFS = {
+    learn: { learnMode: true, subMode: 'both', label: '学', name: '学習モード(英日+辞書)' },
+    ja:    { learnMode: false, subMode: 'ja',  label: 'あ', name: '日本語のみ' },
+    en:    { learnMode: false, subMode: 'en',  label: 'A',  name: '英語のみ' },
+    off:   { learnMode: false, subMode: 'off', label: '無', name: '字幕オフ' },
+  };
+
+  function setMode(mode) {
+    const d = MODE_DEFS[mode];
+    if (!d) return;
+    settings.learnMode = d.learnMode;
+    settings.subMode = d.subMode;
+    SPJS.saveSettings(settings);
+    applySettings();
+    toast('モード: ' + d.name);
+  }
+
+  function cycleMode() {
+    const order = ['learn', 'ja', 'en', 'off'];
+    setMode(order[(order.indexOf(currentMode()) + 1) % order.length]);
+  }
+
   function updateChip() {
     if (!ui) return;
     const q = (id) => ui.chip.querySelector(`[data-id="${id}"]`);
-    q('mode').textContent = ({ both: '両', ja: 'あ', en: 'A', off: '無' })[settings.subMode];
-    q('learn').classList.toggle('spjs-on', settings.learnMode);
+    const m = currentMode();
+    q('mode').textContent = MODE_DEFS[m].label;
+    q('mode').classList.toggle('spjs-on', m === 'learn');
     q('pause').classList.toggle('spjs-on', settings.autoPause !== 'off');
     q('pause').textContent = settings.autoPause === 'smart' ? '⏸?' : '⏸';
   }

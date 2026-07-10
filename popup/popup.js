@@ -27,8 +27,17 @@ function bind() {
     document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.id === 'tab-' + t.dataset.tab));
   }));
 
+  // モード(学習/日本語/英語/オフの一本化)
+  $('#viewMode').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const m = b.dataset.v;
+    settings.learnMode = m === 'learn';
+    settings.subMode = m === 'learn' ? 'both' : m;
+    save(); render();
+  });
   // セグメント選択
-  for (const [id, key, cast] of [['#subMode', 'subMode', String], ['#autoPause', 'autoPause', String], ['#fontScale', 'fontScale', Number]]) {
+  for (const [id, key, cast] of [['#autoPause', 'autoPause', String], ['#fontScale', 'fontScale', Number]]) {
     $(id).addEventListener('click', (e) => {
       const b = e.target.closest('button');
       if (!b) return;
@@ -37,7 +46,7 @@ function bind() {
     });
   }
   // チェックボックス
-  for (const key of ['enabled', 'learnMode', 'hoverPause', 'blurJa']) {
+  for (const key of ['enabled', 'hoverPause', 'blurJa']) {
     $('#' + key).addEventListener('change', (e) => { settings[key] = e.target.checked; save(); });
   }
   $('#bgOpacity').addEventListener('input', (e) => { settings.bgOpacity = Number(e.target.value); save(); });
@@ -54,10 +63,12 @@ function bind() {
 }
 
 function render() {
-  for (const key of ['enabled', 'learnMode', 'hoverPause', 'blurJa']) $('#' + key).checked = !!settings[key];
+  for (const key of ['enabled', 'hoverPause', 'blurJa']) $('#' + key).checked = !!settings[key];
   $('#bgOpacity').value = settings.bgOpacity;
   $('#geminiKey').value = settings.geminiKey || '';
-  for (const [id, key] of [['#subMode', 'subMode'], ['#autoPause', 'autoPause'], ['#fontScale', 'fontScale']]) {
+  const mode = settings.learnMode ? 'learn' : (settings.subMode === 'both' ? 'ja' : settings.subMode);
+  document.querySelectorAll('#viewMode button').forEach(b => b.classList.toggle('on', mode === b.dataset.v));
+  for (const [id, key] of [['#autoPause', 'autoPause'], ['#fontScale', 'fontScale']]) {
     document.querySelectorAll(id + ' button').forEach(b =>
       b.classList.toggle('on', String(settings[key]) === b.dataset.v));
   }
