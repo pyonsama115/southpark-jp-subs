@@ -18,11 +18,13 @@
 /* ---------- 字幕本体 ---------- */
 .spjs-subwrap {
   position: absolute;
-  left: 0; right: 0;
-  bottom: 6%;
+  left: 0;
+  right: var(--spjs-sub-right, 0px);
+  bottom: var(--spjs-sub-bottom, 6%);
   display: flex;
   justify-content: center;
   pointer-events: none;
+  transition: right 0.2s, bottom 0.2s;
 }
 .spjs-subbox {
   pointer-events: auto;
@@ -53,9 +55,9 @@
 .spjs-blurja .spjs-ja { filter: blur(6px); transition: filter 0.15s; }
 .spjs-blurja .spjs-subbox:hover .spjs-ja { filter: none; }
 
-/* 単語 */
-.spjs-w { cursor: pointer; border-radius: 3px; transition: background 0.12s; }
-.spjs-w:hover { background: rgba(255, 213, 74, 0.28); }
+/* 単語(ホバー辞書は学習モード限定なので見た目も学習モード時のみ) */
+.spjs-learn .spjs-w { cursor: pointer; border-radius: 3px; transition: background 0.12s; }
+.spjs-learn .spjs-w:hover { background: rgba(255, 213, 74, 0.28); }
 .spjs-learn .spjs-unknown {
   text-decoration: underline dotted rgba(255, 213, 74, 0.85) 2px;
   text-underline-offset: 3px;
@@ -114,6 +116,8 @@
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 .spjs-chip.spjs-show { opacity: 1; transform: none; }
+/* ドロワー展開中はチップを動画側へ退避 */
+.spjs-drawer-open .spjs-chip { right: calc(var(--spjs-drawer-w, 360px) + 14px); }
 .spjs-chip-btn {
   all: unset;
   cursor: pointer;
@@ -141,11 +145,26 @@
   backdrop-filter: blur(6px);
 }
 .spjs-dr-title {
-  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 10px 10px 14px;
   color: #ccc; font-size: 12px; font-weight: 600;
   border-bottom: 1px solid var(--spjs-border);
   flex: none;
 }
+.spjs-dr-close {
+  all: unset;
+  cursor: pointer;
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  color: #aaa;
+  font-size: 13px;
+  flex: none;
+}
+.spjs-dr-close:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
 .spjs-dr-list { overflow-y: auto; flex: 1; overscroll-behavior: contain; }
 .spjs-dr-row {
   display: flex; gap: 8px;
@@ -158,6 +177,42 @@
 .spjs-dr-time { color: #888; font-size: 11px; flex: none; padding-top: 2px; font-variant-numeric: tabular-nums; }
 .spjs-dr-en { color: #eee; font-size: 12.5px; line-height: 1.4; }
 .spjs-dr-ja { color: #9fc3ff; font-size: 12px; line-height: 1.4; margin-top: 1px; }
+
+/* ---------- 塊・文法解説パネル ---------- */
+.spjs-explain {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  width: min(420px, 46%);
+  max-height: 70%;
+  background: var(--spjs-panel);
+  border: 1px solid var(--spjs-border);
+  border-radius: 12px;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  animation: spjs-fadein 0.15s ease-out;
+}
+.spjs-ex-en {
+  padding: 8px 14px;
+  color: var(--spjs-accent);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex: none;
+}
+.spjs-ex-body {
+  padding: 10px 14px 12px;
+  color: #e8e8e8;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 
 /* ---------- チートシート / トースト ---------- */
 .spjs-cheat {

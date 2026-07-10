@@ -186,10 +186,11 @@
     const drawer = el('div', 'spjs-drawer spjs-hidden');
     const cheat = buildCheatsheet();
     const toast = el('div', 'spjs-toast spjs-hidden');
+    const explain = el('div', 'spjs-explain spjs-hidden');
 
-    root.append(subWrap, chip, dictPop, drawer, cheat, toast);
+    root.append(subWrap, chip, dictPop, drawer, cheat, toast, explain);
     container.append(root);
-    ui = { root, subWrap, subBox, enLine, jaLine, chip, dictPop, drawer, cheat, toast, drawerBuiltCount: 0 };
+    ui = { root, subWrap, subBox, enLine, jaLine, chip, dictPop, drawer, cheat, toast, explain, drawerBuiltCount: 0 };
 
     video.addEventListener('timeupdate', renderNow);
     video.addEventListener('seeked', () => { autoPausedKey = null; renderNow(); });
@@ -199,7 +200,8 @@
 
     // 字幕ホバーで一時停止
     subBox.addEventListener('mouseenter', () => {
-      if (!settings.hoverPause || !video || video.paused) return;
+      // ホバー一時停止は学習モード限定(視聴モードでは止めない)
+      if (!settings.learnMode || !settings.hoverPause || !video || video.paused) return;
       video.pause(); pausedByHover = true;
     });
     subBox.addEventListener('mouseleave', () => {
@@ -209,6 +211,7 @@
 
     // 単語ホバー辞書(イベント委譲)
     subBox.addEventListener('mouseover', (e) => {
+      if (!settings.learnMode) return; // 単語ホバー辞書は学習モード限定
       const w = e.target.closest('.spjs-w');
       if (!w) return;
       clearTimeout(hoverTimer);
@@ -219,6 +222,7 @@
       if (e.target.closest('.spjs-w')) { clearTimeout(hoverTimer); hideDictSoon(); }
     });
     subBox.addEventListener('click', (e) => {
+      if (!settings.learnMode) return;
       const w = e.target.closest('.spjs-w');
       if (w) toggleKnown(w.dataset.w);
     });
@@ -465,11 +469,15 @@
       case 't': case 'T':
         toggleDrawer();
         break;
+      case 'e': case 'E':
+        explainCurrentCue();
+        break;
       case '?':
         ui.cheat.classList.toggle('spjs-hidden');
         break;
       case 'Escape':
         ui.cheat.classList.add('spjs-hidden');
+        ui.explain.classList.add('spjs-hidden');
         if (!ui.drawer.classList.contains('spjs-hidden')) toggleDrawer();
         break;
     }
@@ -501,6 +509,7 @@
     chip.append(
       mk('mode', '両', '字幕: 日本語/英語/両方/オフ'),
       mk('learn', '学', '学習モード(単語辞書・未知語ハイライト)'),
+      mk('explain', '💡', 'このセリフの塊・文法を解説 (E)'),
       mk('pause', '⏸', 'オートポーズ: オフ/毎セリフ/未知語のみ'),
       mk('replay', '↻', 'このセリフをリプレイ (←)'),
       mk('drawer', '≡', 'セリフ一覧 (T)'),
@@ -531,6 +540,7 @@
           if (c) { video.currentTime = c.start + 0.01; video.play(); }
           break;
         }
+        case 'explain': explainCurrentCue(); break;
         case 'drawer': toggleDrawer(); break;
         case 'help': ui.cheat.classList.toggle('spjs-hidden'); break;
       }
@@ -562,14 +572,20 @@
     if (!video || !container) return;
     ui.root.classList.toggle('spjs-drawer-open', open);
     if (open) {
-      const drawerW = Math.min(360, container.clientWidth * 0.42);
-      const k = Math.max(0.3, (container.clientWidth - drawerW) / container.clientWidth);
+      const W = container.clientWidth, H = container.clientHeight;
+      const drawerW = Math.min(360, W * 0.42);
+      const k = Math.max(0.3, (W - drawerW) / W);
       video.style.transformOrigin = 'left center';
       video.style.transform = `scale(${k})`;
       ui.root.style.setProperty('--spjs-drawer-w', drawerW + 'px');
+      // 字幕を縮小後の動画エリア(左寄せ・上下中央)に合わせる
+      ui.root.style.setProperty('--spjs-sub-right', drawerW + 'px');
+      ui.root.style.setProperty('--spjs-sub-bottom', Math.round((1 - k) * H / 2 + 0.06 * k * H) + 'px');
     } else {
       video.style.transform = '';
       video.style.transformOrigin = '';
+      ui.root.style.removeProperty('--spjs-sub-right');
+      ui.root.style.removeProperty('--spjs-sub-bottom');
     }
   }
 
@@ -613,6 +629,124 @@
     }
   }
 
+  // ---------- 塊・文法解説(Prompt API / Gemini Nano) ----------
+  let lmSession = null;
+  let lmCreating = null;
+  const explainCache = new Map(); // cue.h -> text
+  let explainSeq = 0;
+
+  async function ensureLM(onProgress) {
+    if (lmSession) return lmSession;
+    if (lmCreating) return lmCreating;
+    if (typeof LanguageModel === 'undefined') return null;
+    lmCreating = (async () => {
+      try {
+        lmSession = await LanguageModel.create({
+          initialPrompts: [{ role: 'system', content: EXPLAIN_SYSTEM }],
+          monitor(m) {
+            m.addEventListener('downloadprogress', (e) => onProgress?.(e.loaded));
+          },
+        });
+        return lmSession;
+      } catch (e) {
+        console.warn('[SPJS] LanguageModel unavailable:', e.message);
+        return null;
+      } finally {
+        lmCreating = null;
+      }
+    })();
+    return lmCreating;
+  }
+
+  async function explainCurrentCue() {
+    const cue = activeCue(video.currentTime) || prevCue();
+    if (!cue) { toast('解説対象のセリフがありません'); return; }
+    if (!video.paused) video.pause();
+    const seq = ++explainSeq;
+    const panel = ui.explain;
+    panel.textContent = '';
+    const head = el('div', 'spjs-dr-title');
+    head.append(el('span', '', '💡 塊・文法解説'));
+    const close = el('button', 'spjs-dr-close', '✕');
+    close.addEventListener('click', () => panel.classList.add('spjs-hidden'));
+    head.append(close);
+    const enq = el('div', 'spjs-ex-en', cue.en.replace(/\n/g, ' '));
+    const body = el('div', 'spjs-ex-body', '');
+    panel.append(head, enq, body);
+    panel.classList.remove('spjs-hidden');
+
+    if (explainCache.has(cue.h)) { body.textContent = explainCache.get(cue.h); return; }
+
+    const idx = cueList.indexOf(cue);
+    const ctx = idx > 0 ? `直前のセリフ: ${cueList[idx - 1].en.replace(/\n/g, ' ')}\n` : '';
+    const target = cue.en.replace(/\n/g, ' ');
+
+    // 1) オンデバイス(Gemini Nano)
+    let lmAvail = 'unavailable';
+    try { if (typeof LanguageModel !== 'undefined') lmAvail = await LanguageModel.availability(); } catch (e) { /* unavailable */ }
+    if (lmAvail !== 'unavailable') {
+      body.textContent = 'AIモデル準備中…(初回はダウンロードに数分かかることがあります)';
+      const session = await ensureLM((p) => {
+        if (seq === explainSeq) body.textContent = `AIモデルをダウンロード中… ${Math.round(p * 100)}%`;
+      });
+      if (seq !== explainSeq) return;
+      if (session) {
+        body.textContent = '解説を生成中…';
+        try {
+          const stream = session.promptStreaming(`${ctx}解説対象: ${target}`);
+          let out = '';
+          for await (const chunk of stream) {
+            if (seq !== explainSeq) return;
+            out += chunk;
+            body.textContent = out;
+          }
+          explainCache.set(cue.h, out);
+          return;
+        } catch (e) { /* クラウドへフォールバック */ }
+      }
+    }
+
+    // 2) Gemini API(無料枠・popupでキー設定)
+    if (settings.geminiKey) {
+      body.textContent = '解説を生成中…(Gemini API)';
+      try {
+        const out = await explainViaGeminiAPI(ctx, target);
+        if (seq !== explainSeq) return;
+        body.textContent = out;
+        explainCache.set(cue.h, out);
+      } catch (e) {
+        if (seq === explainSeq) body.textContent = 'Gemini APIエラー: ' + e.message;
+      }
+      return;
+    }
+
+    body.textContent = 'オンデバイスAIが使えません(Gemini Nanoはディスク空き容量 約22GB が必要です)。\n\n代わりに拡張アイコン → 設定 → Gemini APIキー(無料枠あり)を設定すると解説が使えます。\nキー取得: https://aistudio.google.com/apikey';
+  }
+
+  const EXPLAIN_SYSTEM = 'あなたは英語教師です。与えられた英語のセリフについて、意味の塊(句動詞・イディオム・口語表現・コロケーション)と文法ポイントを日本語で簡潔に解説します。形式: 最初に全体の自然な和訳を1行。次に「・塊: 説明」の箇条書き(重要なもののみ2〜4個)。最後に文法ポイントがあれば「・文法: 説明」を1〜2個。前置きや締めの文は書かない。';
+
+  async function explainViaGeminiAPI(ctx, target) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${encodeURIComponent(settings.geminiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: EXPLAIN_SYSTEM }] },
+          contents: [{ role: 'user', parts: [{ text: `${ctx}解説対象: ${target}` }] }],
+        }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      throw new Error(err?.error?.message || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+    if (!text) throw new Error('空の応答');
+    return text;
+  }
+
   // ---------- チートシート / トースト ----------
   function buildCheatsheet() {
     const c = el('div', 'spjs-cheat spjs-hidden');
@@ -621,6 +755,7 @@
       ['←', 'このセリフをリプレイ(学習モード時)'],
       ['A / D', '前のセリフ / 次のセリフ'],
       ['S', 'オートポーズ切替(オフ→毎セリフ→未知語のみ)'],
+      ['E', 'このセリフの塊・文法をAI解説'],
       ['T', 'セリフ一覧を開閉'],
       ['単語ホバー', '読み+意味を表示(自動一時停止)'],
       ['単語クリック', '「知ってる」登録(ハイライト除外)'],

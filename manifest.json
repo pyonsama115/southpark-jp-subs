@@ -4,7 +4,10 @@
   "version": "1.0.0",
   "description": "southparkstudios.com の英語字幕をオンデバイス翻訳で日本語表示。学習モード(単語ホバー辞書・オートポーズ)付き。",
   "permissions": ["storage", "offscreen"],
-  "host_permissions": ["https://www.southparkstudios.com/*"],
+  "host_permissions": [
+    "https://www.southparkstudios.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
   "background": { "service_worker": "background.js" },
   "content_scripts": [
     {

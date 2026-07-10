@@ -54,29 +54,45 @@ const SPJS_TR = (() => {
   }
 
   // 英語以外のセリフ(独語等が英語字幕にそのまま入っていることがある)用
+  // 重要: 言語ペアのモデルDLをキュー内でawaitすると翻訳全体が詰まるため、
+  // 準備はバックグラウンドで行い、準備中のセリフはnull(保留→次バッチで再試行)を返す。
   let detector = null;
-  const langTranslators = new Map(); // lang -> Translator|null
+  const langTranslators = new Map(); // lang -> Translator|null(null=作成失敗)
+  const langCreating = new Set();
+
+  function withTimeout(p, ms) {
+    return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+  }
+
   async function translateSmart(text) {
-    // 言語判定して英語以外なら該当ペアの翻訳器で訳す
     try {
       if (typeof LanguageDetector !== 'undefined') {
-        if (!detector) detector = await LanguageDetector.create();
+        if (!detector) detector = await withTimeout(LanguageDetector.create(), 10000);
         const [top] = await detector.detect(text);
         const lang = top?.detectedLanguage;
         if (lang && lang !== 'en' && lang !== 'ja' && top.confidence >= 0.5) {
-          if (!langTranslators.has(lang)) {
-            try {
-              const avail = await Translator.availability({ sourceLanguage: lang, targetLanguage: 'ja' });
-              langTranslators.set(lang, avail === 'unavailable' ? null
-                : await Translator.create({ sourceLanguage: lang, targetLanguage: 'ja' }));
-            } catch (e) { langTranslators.set(lang, null); }
+          if (langTranslators.has(lang)) {
+            const lt = langTranslators.get(lang);
+            if (lt) return await withTimeout(lt.translate(text), 15000);
+            // 作成失敗済みの言語 → 通常翻訳にフォールバック
+          } else {
+            if (!langCreating.has(lang)) {
+              langCreating.add(lang);
+              (async () => {
+                try {
+                  const avail = await Translator.availability({ sourceLanguage: lang, targetLanguage: 'ja' });
+                  langTranslators.set(lang, avail === 'unavailable' ? null
+                    : await Translator.create({ sourceLanguage: lang, targetLanguage: 'ja' }));
+                } catch (e) { langTranslators.set(lang, null); }
+                langCreating.delete(lang);
+              })();
+            }
+            return null; // 準備中は保留(キューは止めない)
           }
-          const lt = langTranslators.get(lang);
-          if (lt) return await lt.translate(text);
         }
       }
     } catch (e) { /* 判定失敗時は通常翻訳へ */ }
-    return await translator.translate(text);
+    return await withTimeout(translator.translate(text), 15000);
   }
 
   // texts: string[] -> ja string[](失敗した要素は null)

@@ -41,6 +41,7 @@ function bind() {
     $('#' + key).addEventListener('change', (e) => { settings[key] = e.target.checked; save(); });
   }
   $('#bgOpacity').addEventListener('input', (e) => { settings.bgOpacity = Number(e.target.value); save(); });
+  $('#geminiKey').addEventListener('change', (e) => { settings.geminiKey = e.target.value.trim(); save(); });
 
   $('#downloadModel').addEventListener('click', downloadModel);
   $('#wbExport').addEventListener('click', exportCSV);
@@ -55,6 +56,7 @@ function bind() {
 function render() {
   for (const key of ['enabled', 'learnMode', 'hoverPause', 'blurJa']) $('#' + key).checked = !!settings[key];
   $('#bgOpacity').value = settings.bgOpacity;
+  $('#geminiKey').value = settings.geminiKey || '';
   for (const [id, key] of [['#subMode', 'subMode'], ['#autoPause', 'autoPause'], ['#fontScale', 'fontScale']]) {
     document.querySelectorAll(id + ' button').forEach(b =>
       b.classList.toggle('on', String(settings[key]) === b.dataset.v));
