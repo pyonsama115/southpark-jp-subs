@@ -86,7 +86,7 @@
     if (!best) return;
     if (track !== best) {
       track = best;
-      track.addEventListener('cuechange', onCueChange);
+      track.addEventListener('cuechange', () => renderNow());
     }
     // サイト側が showing に戻すので hidden を強制維持(ロードは継続される)
     const want = settings.enabled ? 'hidden' : 'disabled';
@@ -212,6 +212,7 @@
       const w = e.target.closest('.spjs-w');
       if (!w) return;
       clearTimeout(hoverTimer);
+      clearTimeout(ui.hideTimer); // 直前の単語のmouseoutによる「閉じる」予約を取り消す
       hoverTimer = setTimeout(() => showDict(w), 120);
     });
     subBox.addEventListener('mouseout', (e) => {
@@ -240,6 +241,7 @@
     if (!ui || !video) return;
     const base = Math.min(42, Math.max(14, video.clientWidth * 0.021)) * settings.fontScale;
     ui.root.style.setProperty('--spjs-fs', base + 'px');
+    if (ui.root.classList.contains('spjs-drawer-open')) applyDrawerLayout(true); // リサイズ追従
   }
 
   function applySettings() {
@@ -276,7 +278,10 @@
 
     const stateKey = cue ? cue.key + '|' + (cue.ja ? 1 : 0) + '|' + settings.subMode + settings.learnMode : 'none';
     if (!force && stateKey === renderedKey) return;
-    if (stateKey !== renderedKey) ui.dictPop.classList.add('spjs-hidden');
+    // cue切替でポップアップを閉じる(ただし読んでいる最中=ホバー中は残す)
+    if (stateKey !== renderedKey && !ui.dictPop.matches(':hover') && !ui.subBox.matches(':hover')) {
+      ui.dictPop.classList.add('spjs-hidden');
+    }
     renderedKey = stateKey;
 
     if (!cue) { ui.subBox.classList.add('spjs-hidden'); return; }
@@ -346,6 +351,7 @@
   async function showDict(wordEl) {
     await SPJS_DICT.load();
     if (!wordEl.isConnected) return; // cueが切り替わって単語が消えた後は出さない
+    clearTimeout(ui.hideTimer);     // 表示中に古い「閉じる」予約が発火しないように
     const word = wordEl.dataset.w;
     const info = SPJS_DICT.lookup(word);
     const pop = ui.dictPop;
@@ -464,7 +470,7 @@
         break;
       case 'Escape':
         ui.cheat.classList.add('spjs-hidden');
-        ui.drawer.classList.add('spjs-hidden');
+        if (!ui.drawer.classList.contains('spjs-hidden')) toggleDrawer();
         break;
     }
   }
@@ -545,14 +551,38 @@
   // ---------- トランスクリプトドロワー ----------
   function toggleDrawer() {
     const d = ui.drawer;
-    if (d.classList.contains('spjs-hidden')) { buildDrawer(); d.classList.remove('spjs-hidden'); }
+    const open = d.classList.contains('spjs-hidden');
+    if (open) { buildDrawer(); d.classList.remove('spjs-hidden'); }
     else d.classList.add('spjs-hidden');
+    applyDrawerLayout(open);
+  }
+
+  // ドロワー展開中は動画を左に寄せて縮小し、セリフ一覧と被らないようにする
+  function applyDrawerLayout(open) {
+    if (!video || !container) return;
+    ui.root.classList.toggle('spjs-drawer-open', open);
+    if (open) {
+      const drawerW = Math.min(360, container.clientWidth * 0.42);
+      const k = Math.max(0.3, (container.clientWidth - drawerW) / container.clientWidth);
+      video.style.transformOrigin = 'left center';
+      video.style.transform = `scale(${k})`;
+      ui.root.style.setProperty('--spjs-drawer-w', drawerW + 'px');
+    } else {
+      video.style.transform = '';
+      video.style.transformOrigin = '';
+    }
   }
 
   function buildDrawer() {
     const d = ui.drawer;
     d.textContent = '';
-    d.append(el('div', 'spjs-dr-title', 'セリフ一覧(クリックでジャンプ / Tで閉じる)'));
+    const head = el('div', 'spjs-dr-title');
+    head.append(el('span', '', 'セリフ一覧(クリックでジャンプ)'));
+    const close = el('button', 'spjs-dr-close', '✕');
+    close.title = '閉じる (T)';
+    close.addEventListener('click', toggleDrawer);
+    head.append(close);
+    d.append(head);
     const list = el('div', 'spjs-dr-list');
     for (const c of cueList) {
       const row = el('div', 'spjs-dr-row');

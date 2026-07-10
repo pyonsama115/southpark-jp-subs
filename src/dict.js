@@ -17,6 +17,18 @@ const SPJS_DICT = (() => {
     if (ejdict) return;
     if (loading) return loading;
     loading = (async () => {
+      try {
+        await doLoad();
+      } catch (e) {
+        loading = null; // 失敗しても次のホバーで再試行できるように
+        throw e;
+      }
+    })();
+    return loading;
+  }
+
+  async function doLoad() {
+    {
       const [ej, cm, fr] = await Promise.all([
         fetchText('data/ejdict.txt'),
         fetchText('data/cmudict.dict'),
@@ -50,8 +62,7 @@ const SPJS_DICT = (() => {
         if (w) frMap.set(w, rank++);
       }
       ejdict = ejMap; cmu = cmMap; freq = frMap;
-    })();
-    return loading;
+    }
   }
 
   function isLoaded() { return !!ejdict; }

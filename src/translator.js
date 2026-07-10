@@ -53,13 +53,39 @@ const SPJS_TR = (() => {
     return m;
   }
 
+  // 英語以外のセリフ(独語等が英語字幕にそのまま入っていることがある)用
+  let detector = null;
+  const langTranslators = new Map(); // lang -> Translator|null
+  async function translateSmart(text) {
+    // 言語判定して英語以外なら該当ペアの翻訳器で訳す
+    try {
+      if (typeof LanguageDetector !== 'undefined') {
+        if (!detector) detector = await LanguageDetector.create();
+        const [top] = await detector.detect(text);
+        const lang = top?.detectedLanguage;
+        if (lang && lang !== 'en' && lang !== 'ja' && top.confidence >= 0.5) {
+          if (!langTranslators.has(lang)) {
+            try {
+              const avail = await Translator.availability({ sourceLanguage: lang, targetLanguage: 'ja' });
+              langTranslators.set(lang, avail === 'unavailable' ? null
+                : await Translator.create({ sourceLanguage: lang, targetLanguage: 'ja' }));
+            } catch (e) { langTranslators.set(lang, null); }
+          }
+          const lt = langTranslators.get(lang);
+          if (lt) return await lt.translate(text);
+        }
+      }
+    } catch (e) { /* 判定失敗時は通常翻訳へ */ }
+    return await translator.translate(text);
+  }
+
   // texts: string[] -> ja string[](失敗した要素は null)
   async function translateBatch(texts) {
     const m = await ensure();
     if (m === 'local') {
       const out = [];
       for (const t of texts) {
-        try { out.push(await translator.translate(t)); }
+        try { out.push(await translateSmart(t)); }
         catch (e) { out.push(null); }
       }
       return out;

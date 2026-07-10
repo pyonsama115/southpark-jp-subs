@@ -2,6 +2,8 @@
 'use strict';
 
 let translator = null;
+let detector = null;
+const langTranslators = new Map();
 
 async function ensure() {
   if (translator) return true;
@@ -12,6 +14,29 @@ async function ensure() {
   } catch (e) {
     return false;
   }
+}
+
+// 英語字幕に混ざる外国語セリフ(独語等)を言語判定して該当ペアで訳す
+async function translateSmart(text) {
+  try {
+    if (typeof LanguageDetector !== 'undefined') {
+      if (!detector) detector = await LanguageDetector.create();
+      const [top] = await detector.detect(text);
+      const lang = top?.detectedLanguage;
+      if (lang && lang !== 'en' && lang !== 'ja' && top.confidence >= 0.5) {
+        if (!langTranslators.has(lang)) {
+          try {
+            const avail = await Translator.availability({ sourceLanguage: lang, targetLanguage: 'ja' });
+            langTranslators.set(lang, avail === 'unavailable' ? null
+              : await Translator.create({ sourceLanguage: lang, targetLanguage: 'ja' }));
+          } catch (e) { langTranslators.set(lang, null); }
+        }
+        const lt = langTranslators.get(lang);
+        if (lt) return await lt.translate(text);
+      }
+    }
+  } catch (e) { /* 通常翻訳へ */ }
+  return await translator.translate(text);
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -35,7 +60,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const out = [];
       if (await ensure()) {
         for (const t of msg.texts || []) {
-          try { out.push(await translator.translate(t)); } catch (e) { out.push(null); }
+          try { out.push(await translateSmart(t)); } catch (e) { out.push(null); }
         }
       } else {
         for (const _ of msg.texts || []) out.push(null);
