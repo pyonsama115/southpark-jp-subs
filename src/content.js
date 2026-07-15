@@ -14,14 +14,35 @@
   let track = null;
   let container = null;
   let ui = null;               // オーバーレイDOM一式
-  let cues = new Map();        // key -> {key,start,end,en,ja}
+  let cues = new Map();        // key -> {key,start,end,en,speakerId,ja,jaAi}
   let cueList = [];            // start順
-  let cache = {};              // hash(en) -> ja (エピソード単位)
+  let cache = {};              // v2|hash(en)|speaker -> Translator生訳 (エピソード単位)
+  let aiCache = {};            // cue.key -> AI自然訳メタデータ (エピソード単位)
   let epId = null;
   let knownWords = new Set();
   let wordbook = {};
   let cacheDirty = false;
+  let aiCacheDirty = false;
   let trRunning = false;
+  let aiTrRunning = false;
+  let trRunSeq = 0;
+  let aiRunSeq = 0;
+  let aiAvailability = 'unknown';
+  let aiAvailabilityAt = 0;
+  let generation = 0;
+  let translationRevision = 0;
+  let naturalPauseUntil = 0;
+  const aiAttempts = new Map();
+  const BASIC_BATCH_SIZE = 1;
+  const AI_BATCH_SIZE = SPJS_NATURAL_TR.MAX_BATCH_SIZE || 5;
+  const AI_MAX_ATTEMPTS = 3;
+  const AI_RETRY_BASE_MS = 5000;
+  const BASE_CACHE_PREFIX = 'v2|';
+  let aiPreferredBatchSize = AI_BATCH_SIZE;
+  let aiWarmupFailures = 0;
+  let aiWarmupRetryAt = 0;
+  let trController = null;
+  let aiWorkerController = null;
   let lastActiveKey = null;
   let pausedByHover = false;
   let autoPausedKey = null;
@@ -44,6 +65,14 @@
 
     setInterval(tick, 800);
     document.addEventListener('keydown', onKey, true);
+    window.addEventListener('pagehide', () => {
+      flushCache();
+      cancelBaseWorker();
+      cancelNaturalWorker();
+      cancelExplanation(false, false);
+      destroyExplainBase();
+      SPJS_NATURAL_TR.destroy();
+    }, { once: true });
   }
 
   function currentEpId() {
@@ -65,12 +94,21 @@
     if (!video) return;
     ensureTrack();
     collectCues();
+    scheduleNaturalTranslate();
     scheduleTranslate();
   }
 
   function reset() {
     flushCache();
-    cues = new Map(); cueList = []; cache = {}; lastActiveKey = null; autoPausedKey = null;
+    generation++;
+    cancelNaturalWorker();
+    cancelExplanation(false, false);
+    naturalPauseUntil = 0;
+    cues = new Map(); cueList = []; cache = {}; aiCache = {}; lastActiveKey = null; autoPausedKey = null;
+    aiAttempts.clear(); translationRevision = 0;
+    aiPreferredBatchSize = AI_BATCH_SIZE;
+    aiWarmupFailures = 0; aiWarmupRetryAt = 0;
+    cancelBaseWorker();
     epId = null; track = null;
     if (ui) { ui.root.remove(); ui = null; }
     video = null;
@@ -98,23 +136,37 @@
     if (!track || !track.cues || !settings.enabled) return;
     if (!epId) {
       epId = currentEpId() || 'unknown';
-      const st = await SPJS.storage.get('tr:' + epId);
-      cache = st['tr:' + epId] || {};
-      for (const c of cues.values()) if (!c.ja && cache[c.h]) c.ja = cache[c.h];
+      const loadingEp = epId, loadingGeneration = generation;
+      const st = await SPJS.storage.get(['tr:' + loadingEp, 'tr-ai:' + loadingEp]);
+      if (loadingGeneration !== generation || epId !== loadingEp) return;
+      const storedBaseCache = st['tr:' + loadingEp] || {};
+      cache = Object.fromEntries(Object.entries(storedBaseCache)
+        .filter(([key, value]) => key.startsWith(BASE_CACHE_PREFIX) && typeof value === 'string'));
+      if (Object.keys(cache).length !== Object.keys(storedBaseCache).length) cacheDirty = true;
+      const storedAi = st['tr-ai:' + loadingEp];
+      aiCache = storedAi?.version === SPJS_NATURAL_TR.CACHE_VERSION &&
+        storedAi?.profileVersion === SPJS_CHARACTERS.PROFILE_VERSION
+        ? (storedAi.entries || {}) : {};
+      for (const cue of cues.values()) applyCachedTranslations(cue);
     }
     let added = false;
     for (let i = 0; i < track.cues.length; i++) {
       const c = track.cues[i];
-      // WebVTTの装飾タグ(<i> <b> <c.class> 等)と実体参照を除去
-      const text = (c.text || '')
-        .replace(/<[^>]*>/g, '')
-        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
-        .trim();
+      // WebVTT voiceタグ(<v Name>)を保持してから装飾を除去する。
+      const parsed = SPJS_CHARACTERS.parseCue(c);
+      const text = parsed.text;
       if (!text) continue;
       const key = c.startTime.toFixed(2) + '|' + hash(text);
       if (cues.has(key)) continue;
       const h = hash(text);
-      cues.set(key, { key, start: c.startTime, end: c.endTime, en: text, h, ja: cache[h] || null });
+      const cue = {
+        key, start: c.startTime, end: c.endTime, en: text, h,
+        speakerRaw: parsed.speakerRaw, speakerId: parsed.speakerId,
+        speakerSource: parsed.speakerSource, segments: parsed.segments,
+        ja: null, jaAi: null,
+      };
+      applyCachedTranslations(cue);
+      cues.set(key, cue);
       added = true;
     }
     if (added) {
@@ -123,30 +175,296 @@
     }
   }
 
+  function applyCachedTranslations(cue) {
+    if (!cue) return;
+    const cacheKey = baseCacheKey(cue);
+    if (!cue.ja && cache[cacheKey]) cue.ja = canonicalBaseTranslation(cue, cache[cacheKey]);
+    const entry = aiCache[cue.key];
+    const currentBaseHash = cue.ja ? hash(cue.ja) : null;
+    if (entry && entry.sourceHash === cue.h &&
+        entry.baseHash === currentBaseHash &&
+        entry.speakerId === (cue.speakerId || null) && typeof entry.ja === 'string') {
+      cue.jaAi = entry.ja;
+    } else if (cue.ja && entry && entry.sourceHash === cue.h &&
+        entry.speakerId === (cue.speakerId || null) && entry.baseHash !== currentBaseHash) {
+      // direct-Nanoや別の基本訳を参照した古い自然訳は、基本訳到着時に必ず再編集する。
+      cue.jaAi = null;
+      delete aiCache[cue.key];
+      aiCacheDirty = true;
+      aiAttempts.delete(cue.key);
+    }
+  }
+
+  function baseCacheKey(cue) {
+    return `${BASE_CACHE_PREFIX}${cue?.h || ''}|${cue?.speakerId || '-'}`;
+  }
+
+  function canonicalBaseTranslation(cue, value) {
+    const terms = SPJS_CHARACTERS.translationTermsFor(cue?.en, cue?.speakerId);
+    const fixed = SPJS_CHARACTERS.canonicalizeTranslation(value, terms).text.trim();
+    return fixed || String(value || '').trim();
+  }
+
+  function effectiveJa(cue) {
+    if (!cue) return null;
+    return settings.aiNaturalTranslation && cue.jaAi ? cue.jaAi : cue.ja;
+  }
+
   // ---------- 翻訳 ----------
   function scheduleTranslate() {
     if (trRunning || !settings.enabled) return;
     const pending = cueList.filter(c => !c.ja);
     if (!pending.length) return;
     trRunning = true;
+    const runSeq = ++trRunSeq;
+    const workerController = new AbortController();
+    trController = workerController;
+    let continueImmediately = false;
     (async () => {
+      const runGeneration = generation, runEp = epId;
       try {
-        // 再生位置に近い順に優先
+        // 現在 → 未来 → 過去。シーク後も過去の近接cueより先読みを優先する。
         const t0 = video ? video.currentTime : 0;
-        pending.sort((a, b) => Math.abs(a.start - t0) - Math.abs(b.start - t0));
-        const batch = pending.slice(0, 12);
+        // Translator APIは1件ずつ直列なので、小分けにして現在付近を早く表示する。
+        const batch = SPJS_NATURAL_TR.prioritizeTargets(pending, t0, BASIC_BATCH_SIZE);
         const texts = batch.map(c => c.en.replace(/\s*\n\s*/g, ' '));
-        const results = await SPJS_TR.translateBatch(texts);
+        const results = await SPJS_TR.translateBatch(texts, workerController.signal);
+        if (runSeq !== trRunSeq || runGeneration !== generation || runEp !== epId ||
+            workerController.signal.aborted) return;
         let ok = false;
         results.forEach((ja, i) => {
-          if (ja) { batch[i].ja = ja; cache[batch[i].h] = ja; ok = true; }
+          if (ja) {
+            const raw = String(ja).trim();
+            const fixed = canonicalBaseTranslation(batch[i], raw);
+            batch[i].ja = fixed;
+            cache[baseCacheKey(batch[i])] = raw;
+            applyCachedTranslations(batch[i]);
+            ok = true;
+          }
         });
-        if (ok) { cacheDirty = true; flushCacheSoon(); reportProgress(); renderNow(); }
+        if (ok) {
+          cacheDirty = true; translationRevision++;
+          flushCacheSoon(); reportProgress(); renderNow();
+          // 1件目の意味参照訳が完成した時点でNano編集を始め、残りを待たない。
+          setTimeout(scheduleNaturalTranslate, 0);
+          continueImmediately = cueList.some(cue => !cue.ja);
+        }
         else if (SPJS_TR.getMode() === 'unavailable') toastOnce('tr-unavail', '翻訳モデル未導入。拡張アイコン → モデルをダウンロード してください');
       } finally {
-        trRunning = false;
+        if (trController === workerController) trController = null;
+        if (runSeq === trRunSeq) {
+          trRunning = false;
+          if (continueImmediately) setTimeout(scheduleTranslate, 0);
+        }
       }
     })();
+  }
+
+  function cancelBaseWorker() {
+    trRunSeq++;
+    trRunning = false;
+    trController?.abort();
+    trController = null;
+  }
+
+  function reprioritizeBaseTranslation() {
+    if (!settings.enabled) return;
+    if (trRunning) cancelBaseWorker();
+    setTimeout(scheduleTranslate, 0);
+  }
+
+  async function currentAiAvailability() {
+    const now = Date.now();
+    if (now - aiAvailabilityAt < 15000) return aiAvailability;
+    aiAvailabilityAt = now;
+    aiAvailability = await SPJS_NATURAL_TR.availability();
+    reportProgress();
+    return aiAvailability;
+  }
+
+  function aiItem(cue) {
+    const seconds = Math.max(0.5, cue.end - cue.start);
+    return {
+      id: cue.key, start: cue.start, end: cue.end, en: cue.en,
+      baseJa: cue.ja || null,
+      budget: Math.max(6, Math.min(26, Math.floor(seconds * 4))),
+      speakerRaw: cue.speakerRaw, speakerId: cue.speakerId,
+      speakerSource: cue.speakerSource, segments: cue.segments || [],
+    };
+  }
+
+  function canAttemptAi(cue) {
+    const attempt = aiAttempts.get(cue.key);
+    if (!attempt) return true;
+    return attempt.count < AI_MAX_ATTEMPTS && Date.now() >= attempt.nextAt;
+  }
+
+  function recordAiFailure(cue, baseDelay = AI_RETRY_BASE_MS) {
+    const previous = aiAttempts.get(cue.key);
+    const count = (previous?.count || 0) + 1;
+    const delay = Math.min(120000, baseDelay * (2 ** Math.max(0, count - 1)));
+    aiAttempts.set(cue.key, { count, nextAt: Date.now() + delay });
+    if (count >= AI_MAX_ATTEMPTS && completeBaseFallback(cue, cue.ja, 'base-fallback-retry-limit')) {
+      return true;
+    }
+    return false;
+  }
+
+  function completeBaseFallback(cue, value, status = 'base-fallback') {
+    if (!cue?.ja || !value) return false;
+    const baseCheck = SPJS_NATURAL_TR.baseFallbackValue({ ...aiItem(cue), baseJa: cue.ja });
+    const valueCheck = SPJS_NATURAL_TR.baseFallbackValue({ ...aiItem(cue), baseJa: value });
+    if (!baseCheck.safe || !valueCheck.safe) return false;
+    cue.jaAi = valueCheck.value;
+    aiCache[cue.key] = {
+      sourceHash: cue.h,
+      baseHash: hash(cue.ja),
+      speakerId: cue.speakerId || null,
+      status,
+      ja: cue.jaAi,
+    };
+    aiAttempts.delete(cue.key);
+    return true;
+  }
+
+  function naturalRunCurrent(runSeq, runGeneration, runEp) {
+    return runSeq === aiRunSeq && runGeneration === generation && runEp === epId &&
+      settings.enabled && settings.aiNaturalTranslation && Date.now() >= naturalPauseUntil &&
+      !aiWorkerController?.signal.aborted &&
+      (typeof document === 'undefined' || document.visibilityState !== 'hidden');
+  }
+
+  function cancelNaturalWorker() {
+    aiRunSeq++;
+    aiTrRunning = false;
+    aiWorkerController?.abort();
+    aiWorkerController = null;
+    SPJS_NATURAL_TR.abort();
+  }
+
+  function scheduleNaturalTranslate() {
+    if (aiTrRunning || !settings.enabled || !settings.aiNaturalTranslation ||
+        !cueList.length || Date.now() < naturalPauseUntil) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    aiTrRunning = true;
+    const runSeq = ++aiRunSeq;
+    const workerController = new AbortController();
+    aiWorkerController = workerController;
+    let continueImmediately = false;
+    (async () => {
+      const runGeneration = generation, runEp = epId;
+      try {
+        const allPending = cueList.filter(c => !c.jaAi && canAttemptAi(c));
+        // Translator APIが使える時は、意味参照訳ができたcueだけをNanoへ渡す。
+        // 利用不能時だけ英語＋用語集による直接生成へフォールバックする。
+        const pending = SPJS_TR.getMode() === 'unavailable'
+          ? allPending : allPending.filter(cue => cue.ja);
+        if (!pending.length || Date.now() < aiWarmupRetryAt) return;
+        // 自動キューから巨大モデルのDLは始めない。解説またはpopupの明示操作で準備する。
+        if (await currentAiAvailability() !== 'available') return;
+        if (!naturalRunCurrent(runSeq, runGeneration, runEp)) return;
+        // 1件の基本訳ができたら、次の基本訳と並行してNano編集を進める。
+        let warmupTimedOut = false;
+        const warmupTimer = setTimeout(() => {
+          warmupTimedOut = true;
+          workerController.abort();
+        }, 45000);
+        const warmed = await SPJS_NATURAL_TR.warmup('available', workerController.signal);
+        clearTimeout(warmupTimer);
+        if (!warmed) {
+          const identityStillCurrent = runSeq === aiRunSeq && runGeneration === generation &&
+            runEp === epId && settings.enabled && settings.aiNaturalTranslation;
+          if (identityStillCurrent) {
+            aiWarmupFailures++;
+            const baseDelay = warmupTimedOut ? 15000 : 5000;
+            aiWarmupRetryAt = Date.now() + Math.min(60000, baseDelay * (2 ** (aiWarmupFailures - 1)));
+          }
+          return;
+        }
+        if (!naturalRunCurrent(runSeq, runGeneration, runEp)) return;
+        aiWarmupFailures = 0;
+        aiWarmupRetryAt = 0;
+
+        const t0 = video ? video.currentTime : 0;
+        const liveCuePending = pending.some(cue => cue.start <= t0 + EPS && cue.end >= t0 - EPS);
+        // いま表示中の1件を最短promptで先に返し、その後は未来を最大5件ずつ処理する。
+        const batchSize = liveCuePending ? 1 : Math.min(aiPreferredBatchSize, AI_BATCH_SIZE);
+        const targets = SPJS_NATURAL_TR.prioritizeTargets(pending, t0, batchSize);
+        if (!targets.length) return;
+
+        const contextIndexes = new Set();
+        for (const target of targets) {
+          const index = cueList.indexOf(target);
+          if (index > 0) contextIndexes.add(index - 1);
+          if (index >= 0) contextIndexes.add(index);
+          if (index + 1 < cueList.length) contextIndexes.add(index + 1);
+        }
+        const context = [...contextIndexes].sort((a, b) => a - b).map(index => cueList[index]);
+        const submittedTargets = targets.map(aiItem);
+        const submittedBaseHashes = new Map(submittedTargets.map(item => [
+          item.id, item.baseJa ? hash(item.baseJa) : null,
+        ]));
+        const result = await SPJS_NATURAL_TR.translateBatch({
+          targets: submittedTargets, context: context.map(aiItem),
+          signal: workerController.signal,
+        });
+        if (!naturalRunCurrent(runSeq, runGeneration, runEp)) return;
+        if (result.errors?.includes('AbortError')) return;
+        const timedOut = result.errors?.includes('TimeoutError');
+        if (timedOut) aiPreferredBatchSize = Math.max(1, Math.ceil(batchSize / 2));
+
+        let ok = false;
+        for (const cue of targets) {
+          const submittedBaseHash = submittedBaseHashes.get(cue.key) ?? null;
+          const currentBaseHash = cue.ja ? hash(cue.ja) : null;
+          // direct生成中にTranslatorが復旧した場合、その結果をhybrid訳として誤保存しない。
+          if (submittedBaseHash !== currentBaseHash) {
+            aiAttempts.delete(cue.key);
+            continue;
+          }
+          const ja = result.values.get(cue.key);
+          if (result.fallbackIds?.has(cue.key) && cue.ja) {
+            const fallbackJa = result.fallbackValues?.get(cue.key);
+            if (fallbackJa && completeBaseFallback(cue, fallbackJa)) ok = true;
+            else if (recordAiFailure(cue, timedOut ? 15000 : AI_RETRY_BASE_MS)) ok = true;
+            continue;
+          }
+          if (!ja) {
+            if (recordAiFailure(cue, timedOut ? 15000 : AI_RETRY_BASE_MS)) ok = true;
+            continue;
+          }
+          cue.jaAi = ja;
+          aiCache[cue.key] = {
+            sourceHash: cue.h,
+            baseHash: submittedBaseHash,
+            speakerId: cue.speakerId || null,
+            status: 'nano',
+            ja,
+          };
+          aiAttempts.delete(cue.key);
+          ok = true;
+        }
+        if (ok) {
+          if (!timedOut && aiPreferredBatchSize < AI_BATCH_SIZE) aiPreferredBatchSize++;
+          aiCacheDirty = true; translationRevision++;
+          flushCacheSoon(); reportProgress(); renderNow();
+        }
+        continueImmediately = cueList.some(c => !c.jaAi && canAttemptAi(c));
+      } finally {
+        if (aiWorkerController === workerController) aiWorkerController = null;
+        if (runSeq === aiRunSeq) {
+          aiTrRunning = false;
+          // cue発見は800ms周期のまま、AIバッチ間の空白だけをなくす。
+          if (continueImmediately) setTimeout(scheduleNaturalTranslate, 0);
+        }
+      }
+    })();
+  }
+
+  function reprioritizeNaturalTranslation() {
+    if (!settings.enabled || !settings.aiNaturalTranslation) return;
+    if (aiTrRunning) cancelNaturalWorker();
+    setTimeout(scheduleNaturalTranslate, 0);
   }
 
   let flushTimer = null;
@@ -154,16 +472,44 @@
     if (flushTimer) return;
     flushTimer = setTimeout(flushCache, 3000);
   }
-  function flushCache() {
+  async function flushCache() {
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-    if (!cacheDirty || !epId) return;
+    if ((!cacheDirty && !aiCacheDirty) || !epId) return;
+    const writeEp = epId;
+    const writeBase = cacheDirty;
+    const writeAi = aiCacheDirty;
+    const values = {};
+    if (writeBase) values['tr:' + writeEp] = { ...cache };
+    if (writeAi) {
+      values['tr-ai:' + writeEp] = {
+        version: SPJS_NATURAL_TR.CACHE_VERSION,
+        profileVersion: SPJS_CHARACTERS.PROFILE_VERSION,
+        entries: { ...aiCache },
+      };
+    }
     cacheDirty = false;
-    SPJS.storage.set({ ['tr:' + epId]: cache });
+    aiCacheDirty = false;
+    try {
+      await SPJS.storage.set(values);
+    } catch (e) {
+      console.warn('[SPJS] Translation cache save failed:', e?.message || e);
+      if (epId === writeEp) {
+        if (writeBase) cacheDirty = true;
+        if (writeAi) aiCacheDirty = true;
+        flushCacheSoon();
+      }
+    }
   }
 
   function reportProgress() {
     const total = cueList.length, done = cueList.filter(c => c.ja).length;
-    SPJS.storage.set({ trProgress: { ep: epId, total, done, at: Date.now() } });
+    const aiDone = cueList.filter(c => c.jaAi).length;
+    SPJS.storage.set({ trProgress: {
+      ep: epId, total, done, aiDone,
+      aiEnabled: !!settings.aiNaturalTranslation,
+      aiStatus: aiAvailability,
+      at: Date.now(),
+    } });
   }
 
   // ---------- オーバーレイUI ----------
@@ -195,10 +541,18 @@
 
     root.append(subWrap, chip, dictPop, drawer, cheat, toast, explain);
     container.append(root);
-    ui = { root, subWrap, subBox, enLine, jaLine, chip, dictPop, drawer, cheat, toast, explain, drawerBuiltCount: 0 };
+    ui = {
+      root, subWrap, subBox, enLine, jaLine, chip, dictPop, drawer, cheat, toast, explain,
+      drawerBuiltCount: 0, drawerBuiltRevision: -1,
+    };
 
     video.addEventListener('timeupdate', renderNow);
-    video.addEventListener('seeked', () => { autoPausedKey = null; renderNow(); });
+    video.addEventListener('seeked', () => {
+      autoPausedKey = null;
+      renderNow();
+      reprioritizeBaseTranslation();
+      reprioritizeNaturalTranslation();
+    });
     new ResizeObserver(applyFontSize).observe(video);
     applyFontSize();
     applySettings();
@@ -266,7 +620,10 @@
   }
 
   function applySettings() {
+    if (!settings.enabled) cancelBaseWorker();
+    if (!settings.enabled || !settings.aiNaturalTranslation) cancelNaturalWorker();
     if (!ui) return;
+    translationRevision++;
     ui.root.classList.toggle('spjs-learn', settings.learnMode);
     ui.root.classList.toggle('spjs-blurja', settings.blurJa);
     ui.root.style.setProperty('--spjs-bg', `rgba(0,0,0,${settings.bgOpacity})`);
@@ -275,6 +632,8 @@
     renderNow(true);
     if (settings.learnMode) SPJS_DICT.load().then(() => renderNow(true));
     if (track) track.mode = settings.enabled ? 'hidden' : 'disabled';
+    reportProgress();
+    if (settings.aiNaturalTranslation) scheduleNaturalTranslate();
   }
 
   // ---------- 描画 ----------
@@ -298,7 +657,8 @@
     handleAutoPause(cue, t);
     updateDrawerHighlight(cue);
 
-    const stateKey = cue ? cue.key + '|' + (cue.ja ? 1 : 0) + '|' + settings.subMode + settings.learnMode : 'none';
+    const ja = effectiveJa(cue);
+    const stateKey = cue ? cue.key + '|' + hash(ja || '') + '|' + settings.subMode + settings.learnMode : 'none';
     if (force) renderedEnKey = ''; // 設定変更・既知語登録時は英語行も再構築
     if (!force && stateKey === renderedKey) return;
     // cue切替でポップアップを閉じる(ただし読んでいる最中=ホバー中は残す)
@@ -320,8 +680,8 @@
     // 差し替えるとホバー中の辞書処理が死ぬため)
     const enKey = cue.key + '|' + settings.subMode + settings.learnMode;
     if (showEn && enKey !== renderedEnKey) { renderEnLine(cue); renderedEnKey = enKey; }
-    if (showJa) ui.jaLine.textContent = cue.ja || (cue.en ? '(翻訳中…)' : '');
-    if (showJa && !cue.ja) ui.jaLine.classList.add('spjs-pending'); else ui.jaLine.classList.remove('spjs-pending');
+    if (showJa) ui.jaLine.textContent = ja || (cue.en ? '(翻訳中…)' : '');
+    if (showJa && !ja) ui.jaLine.classList.add('spjs-pending'); else ui.jaLine.classList.remove('spjs-pending');
   }
 
   function renderEnLine(cue) {
@@ -503,7 +863,7 @@
         break;
       case 'Escape':
         ui.cheat.classList.add('spjs-hidden');
-        ui.explain.classList.add('spjs-hidden');
+        cancelExplanation(true);
         if (!ui.drawer.classList.contains('spjs-hidden')) toggleDrawer();
         break;
     }
@@ -654,19 +1014,21 @@
       row.append(el('span', 'spjs-dr-time', fmtTime(c.start)));
       const body = el('div', 'spjs-dr-body');
       body.append(el('div', 'spjs-dr-en', c.en.replace(/\n/g, ' ')));
-      if (c.ja) body.append(el('div', 'spjs-dr-ja', c.ja));
+      const ja = effectiveJa(c);
+      if (ja) body.append(el('div', 'spjs-dr-ja', ja));
       row.append(body);
       row.addEventListener('click', () => { video.currentTime = c.start + 0.01; video.play(); });
       list.append(row);
     }
     d.append(list);
     ui.drawerBuiltCount = cueList.length;
+    ui.drawerBuiltRevision = translationRevision;
   }
 
   function updateDrawerHighlight(cue) {
     const d = ui?.drawer;
     if (!d || d.classList.contains('spjs-hidden')) return;
-    if (ui.drawerBuiltCount !== cueList.length) buildDrawer();
+    if (ui.drawerBuiltCount !== cueList.length || ui.drawerBuiltRevision !== translationRevision) buildDrawer();
     const cur = d.querySelector('.spjs-dr-cur');
     const key = cue?.key;
     if (cur && cur.dataset.key === key) return;
@@ -678,37 +1040,122 @@
   }
 
   // ---------- 塊・文法解説(Prompt API / Gemini Nano) ----------
-  let lmSession = null;
-  let lmCreating = null;
+  let explainBaseSession = null;
+  let explainCreating = null;
+  let explainBaseRevision = 0;
+  let explainController = null;
   const explainCache = new Map(); // cue.h -> text
   let explainSeq = 0;
 
-  async function ensureLM(onProgress) {
-    if (lmSession) return lmSession;
-    if (lmCreating) return lmCreating;
+  function destroyExplainSession(session) {
+    try { session?.destroy?.(); } catch (e) { /* best effort */ }
+  }
+
+  function waitForExplainSignal(promise, signal) {
+    if (!signal) return promise;
+    if (signal.aborted) {
+      const error = new Error('The operation was aborted');
+      error.name = 'AbortError';
+      return Promise.reject(error);
+    }
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        cleanup();
+        const error = new Error('The operation was aborted');
+        error.name = 'AbortError';
+        reject(error);
+      };
+      const cleanup = () => signal.removeEventListener('abort', onAbort);
+      signal.addEventListener('abort', onAbort, { once: true });
+      Promise.resolve(promise).then(
+        value => { cleanup(); resolve(value); },
+        error => { cleanup(); reject(error); },
+      );
+    });
+  }
+
+  function destroyExplainBase() {
+    explainBaseRevision++;
+    destroyExplainSession(explainBaseSession);
+    explainBaseSession = null;
+  }
+
+  async function ensureExplainBase(onProgress, signal) {
+    if (explainBaseSession) return explainBaseSession;
+    if (explainCreating) {
+      const existing = await waitForExplainSignal(explainCreating, signal);
+      if (existing || signal?.aborted) return existing;
+    }
     if (typeof LanguageModel === 'undefined') return null;
-    lmCreating = (async () => {
+    const requestedRevision = explainBaseRevision;
+    explainCreating = (async () => {
       try {
-        lmSession = await LanguageModel.create({
+        const createPromise = LanguageModel.create({
+          ...SPJS_NATURAL_TR.CAPABILITY_OPTIONS,
+          ...(signal ? { signal } : {}),
           initialPrompts: [{ role: 'system', content: EXPLAIN_SYSTEM }],
           monitor(m) {
             m.addEventListener('downloadprogress', (e) => onProgress?.(e.loaded));
           },
         });
-        return lmSession;
+        createPromise.then(created => {
+          if (signal?.aborted) destroyExplainSession(created);
+        }, () => {});
+        const created = await waitForExplainSignal(createPromise, signal);
+        if (signal?.aborted || requestedRevision !== explainBaseRevision) {
+          destroyExplainSession(created);
+          return null;
+        }
+        explainBaseSession = created;
+        return explainBaseSession;
       } catch (e) {
-        console.warn('[SPJS] LanguageModel unavailable:', e.message);
+        if (e?.name !== 'AbortError') console.warn('[SPJS] LanguageModel unavailable:', e.message);
         return null;
       } finally {
-        lmCreating = null;
+        explainCreating = null;
       }
     })();
-    return lmCreating;
+    return explainCreating;
+  }
+
+  async function createExplainSession(onProgress, signal) {
+    const base = await ensureExplainBase(onProgress, signal);
+    if (!base || signal?.aborted) return null;
+    if (typeof base.clone === 'function') {
+      let cloned;
+      try { cloned = await waitForExplainSignal(base.clone({ signal }), signal); }
+      catch (e) {
+        if (e?.name !== 'TypeError') throw e;
+        cloned = await waitForExplainSignal(base.clone(), signal);
+      }
+      if (signal?.aborted) { destroyExplainSession(cloned); return null; }
+      return cloned;
+    }
+    return waitForExplainSignal(LanguageModel.create({
+      ...SPJS_NATURAL_TR.CAPABILITY_OPTIONS,
+      signal,
+      initialPrompts: [{ role: 'system', content: EXPLAIN_SYSTEM }],
+    }), signal);
+  }
+
+  function resumeNaturalAfterExplanation() {
+    naturalPauseUntil = Date.now() + 500;
+    setTimeout(scheduleNaturalTranslate, 500);
+  }
+
+  function cancelExplanation(hidePanel = true, resume = true) {
+    const hadActiveWork = !!explainController || naturalPauseUntil === Number.POSITIVE_INFINITY;
+    explainSeq++;
+    explainController?.abort();
+    explainController = null;
+    if (hidePanel) ui?.explain?.classList.add('spjs-hidden');
+    if (resume && hadActiveWork) resumeNaturalAfterExplanation();
   }
 
   async function explainCurrentCue() {
     const cue = activeCue(video.currentTime) || prevCue();
     if (!cue) { toast('解説対象のセリフがありません'); return; }
+    cancelExplanation(false);
     if (!video.paused) video.pause();
     const seq = ++explainSeq;
     const panel = ui.explain;
@@ -716,68 +1163,118 @@
     const head = el('div', 'spjs-dr-title');
     head.append(el('span', '', '💡 塊・文法解説'));
     const close = el('button', 'spjs-dr-close', '✕');
-    close.addEventListener('click', (e) => { e.currentTarget.blur(); panel.classList.add('spjs-hidden'); });
+    close.addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      if (seq === explainSeq) cancelExplanation(true);
+      else panel.classList.add('spjs-hidden');
+    });
     head.append(close);
     const enq = el('div', 'spjs-ex-en', cue.en.replace(/\n/g, ' '));
     const body = el('div', 'spjs-ex-body', '');
     panel.append(head, enq, body);
     panel.classList.remove('spjs-hidden');
 
+    // キャッシュ表示だけなら、進行中の自然訳を止めない。
     if (explainCache.has(cue.h)) { body.textContent = explainCache.get(cue.h); return; }
+
+    // 実際に推論する間だけ自然訳を譲る。シーク・設定OFFと同じ経路で旧workerを止める。
+    naturalPauseUntil = Number.POSITIVE_INFINITY;
+    cancelNaturalWorker();
+    const controller = new AbortController();
+    explainController = controller;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 60000);
 
     const idx = cueList.indexOf(cue);
     const ctx = idx > 0 ? `直前のセリフ: ${cueList[idx - 1].en.replace(/\n/g, ' ')}\n` : '';
     const target = cue.en.replace(/\n/g, ' ');
 
+    try {
     // 1) オンデバイス(Gemini Nano)
     let lmAvail = 'unavailable';
-    try { if (typeof LanguageModel !== 'undefined') lmAvail = await LanguageModel.availability(); } catch (e) { /* unavailable */ }
+    try {
+      if (typeof LanguageModel !== 'undefined') {
+        lmAvail = await waitForExplainSignal(
+          LanguageModel.availability(SPJS_NATURAL_TR.CAPABILITY_OPTIONS),
+          controller.signal,
+        );
+      }
+    } catch (e) { /* unavailable */ }
+    if (seq !== explainSeq || controller.signal.aborted) return;
     if (lmAvail !== 'unavailable') {
       body.textContent = 'AIモデル準備中…(初回はダウンロードに数分かかることがあります)';
-      const session = await ensureLM((p) => {
+      const session = await createExplainSession((p) => {
         if (seq === explainSeq) body.textContent = `AIモデルをダウンロード中… ${Math.round(p * 100)}%`;
-      });
-      if (seq !== explainSeq) return;
+      }, controller.signal);
+      if (seq !== explainSeq || controller.signal.aborted) {
+        destroyExplainSession(session);
+        return;
+      }
       if (session) {
         body.textContent = '解説を生成中…';
         try {
-          const stream = session.promptStreaming(`${ctx}解説対象: ${target}`);
+          const stream = session.promptStreaming(
+            `${ctx}解説対象: ${target}`,
+            { signal: controller.signal },
+          );
           let out = '';
-          for await (const chunk of stream) {
-            if (seq !== explainSeq) return;
+          const iterator = stream[Symbol.asyncIterator]();
+          while (true) {
+            const next = await waitForExplainSignal(iterator.next(), controller.signal);
+            if (next.done) break;
+            const chunk = next.value;
+            if (seq !== explainSeq || controller.signal.aborted) return;
             out += chunk;
             body.textContent = out;
           }
           explainCache.set(cue.h, out);
           return;
-        } catch (e) { /* クラウドへフォールバック */ }
+        } catch (e) {
+          if (controller.signal.aborted) return;
+          // ローカル推論失敗時だけクラウドへフォールバックする。
+        } finally {
+          destroyExplainSession(session);
+        }
       }
     }
 
+    if (controller.signal.aborted) return;
     // 2) Gemini API(無料枠・popupでキー設定)
     if (settings.geminiKey) {
       body.textContent = '解説を生成中…(Gemini API)';
       try {
-        const out = await explainViaGeminiAPI(ctx, target);
-        if (seq !== explainSeq) return;
+        const out = await explainViaGeminiAPI(ctx, target, controller.signal);
+        if (seq !== explainSeq || controller.signal.aborted) return;
         body.textContent = out;
         explainCache.set(cue.h, out);
       } catch (e) {
-        if (seq === explainSeq) body.textContent = 'Gemini APIエラー: ' + e.message;
+        if (seq === explainSeq && !controller.signal.aborted) body.textContent = 'Gemini APIエラー: ' + e.message;
       }
       return;
     }
 
     body.textContent = 'オンデバイスAIが使えません(Gemini Nanoはディスク空き容量 約22GB が必要です)。\n\n代わりに拡張アイコン → 設定 → Gemini APIキー(無料枠あり)を設定すると解説が使えます。\nキー取得: https://aistudio.google.com/apikey';
+    } finally {
+      clearTimeout(timeout);
+      if (seq === explainSeq && explainController === controller) {
+        explainController = null;
+        if (timedOut) body.textContent = '解説が60秒でタイムアウトしました。もう一度お試しください。';
+        resumeNaturalAfterExplanation();
+      }
+    }
   }
 
   const EXPLAIN_SYSTEM = 'あなたは英語教師です。与えられた英語のセリフについて、意味の塊(句動詞・イディオム・口語表現・コロケーション)と文法ポイントを日本語で簡潔に解説します。形式: 最初に全体の自然な和訳を1行。次に「・塊: 説明」の箇条書き(重要なもののみ2〜4個)。最後に文法ポイントがあれば「・文法: 説明」を1〜2個。前置きや締めの文は書かない。';
 
-  async function explainViaGeminiAPI(ctx, target) {
+  async function explainViaGeminiAPI(ctx, target, signal) {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${encodeURIComponent(settings.geminiKey)}`,
       {
         method: 'POST',
+        signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: EXPLAIN_SYSTEM }] },

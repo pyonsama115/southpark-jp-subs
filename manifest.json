@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "South Park 日本語字幕",
-  "version": "1.0.0",
+  "version": "1.2.3",
   "description": "southparkstudios.com の英語字幕をオンデバイス翻訳で日本語表示。学習モード(単語ホバー辞書・オートポーズ)付き。",
   "permissions": ["storage", "offscreen"],
   "host_permissions": [
@@ -18,6 +18,8 @@
         "src/kana.js",
         "src/dict.js",
         "src/translator.js",
+        "src/characters.js",
+        "src/natural-translator.js",
         "src/content.js"
       ],
       "css": ["src/overlay.css"],

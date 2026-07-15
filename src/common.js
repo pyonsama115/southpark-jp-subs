@@ -14,6 +14,7 @@ const SPJS = (() => {
     blurJa: false,          // 日本語をぼかしてホバーで表示
     fontScale: 1,           // 0.85 | 1 | 1.2
     bgOpacity: 0.55,
+    aiNaturalTranslation: true, // 導入済みGemini Nanoで文脈・キャラ口調を反映した自然訳へ差し替え
     geminiKey: '',          // 塊・文法解説のクラウドフォールバック用(空=オンデバイスのみ)
   };
 

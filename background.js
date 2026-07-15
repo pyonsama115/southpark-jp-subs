@@ -37,9 +37,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'spjs-translate') {
     ensureOffscreen()
-      .then(() => chrome.runtime.sendMessage({ type: 'spjs-off-translate', texts: msg.texts }))
+      .then(() => chrome.runtime.sendMessage({
+        type: 'spjs-off-translate', texts: msg.texts, requestId: msg.requestId,
+      }))
       .then(sendResponse)
       .catch(() => sendResponse({ results: (msg.texts || []).map(() => null) }));
+    return true;
+  }
+  if (msg.type === 'spjs-cancel-translate') {
+    ensureOffscreen()
+      .then(() => chrome.runtime.sendMessage({
+        type: 'spjs-off-cancel-translate', requestId: msg.requestId,
+      }))
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false }));
     return true;
   }
 });

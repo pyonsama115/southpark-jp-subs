@@ -61,13 +61,24 @@
   </section>
 
   <section>
-    <h2>翻訳エンジン(Chrome内蔵・無料)</h2>
+    <h2>基本翻訳(Chrome内蔵・無料)</h2>
     <div class="row status">
       <span id="modelStatus">状態確認中…</span>
       <button id="downloadModel" class="primary hidden">モデルをダウンロード</button>
     </div>
     <progress id="dlProgress" max="1" value="0" class="hidden"></progress>
     <div class="row status"><span id="trProgress"></span></div>
+  </section>
+
+  <section>
+    <h2>AI自然訳(ローカル・キャラ口調)</h2>
+    <label class="row"><input type="checkbox" id="aiNaturalTranslation"> 文脈付きの自然訳へ自動で差し替える</label>
+    <p class="note">Translatorの正確な基本訳を1件ずつ先に表示し、Gemini Nanoが意味を保ったままキャラ口調へ編集。現在の1セリフを最優先し、その後は最大5件ずつ先読みします。精度検査に落ちた場合は基本訳を維持します。</p>
+    <div class="row status">
+      <span id="aiModelStatus">AI状態確認中…</span>
+      <button id="prepareAiModel" class="primary hidden">AIモデルを準備</button>
+    </div>
+    <progress id="aiDlProgress" max="1" value="0" class="hidden"></progress>
   </section>
 
   <section>

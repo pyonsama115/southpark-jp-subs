@@ -3,6 +3,7 @@
 const DEFAULTS = {
   enabled: true, subMode: 'both', learnMode: false, autoPause: 'off',
   hoverPause: true, blurJa: false, fontScale: 1, bgOpacity: 0.55,
+  aiNaturalTranslation: true,
 };
 let settings = { ...DEFAULTS };
 
@@ -14,6 +15,7 @@ async function load() {
   bind();
   render();
   refreshModelStatus();
+  refreshAiModelStatus();
   refreshTrProgress();
   renderWordbook();
 }
@@ -46,13 +48,14 @@ function bind() {
     });
   }
   // チェックボックス
-  for (const key of ['enabled', 'hoverPause', 'blurJa']) {
+  for (const key of ['enabled', 'hoverPause', 'blurJa', 'aiNaturalTranslation']) {
     $('#' + key).addEventListener('change', (e) => { settings[key] = e.target.checked; save(); });
   }
   $('#bgOpacity').addEventListener('input', (e) => { settings.bgOpacity = Number(e.target.value); save(); });
   $('#geminiKey').addEventListener('change', (e) => { settings.geminiKey = e.target.value.trim(); save(); });
 
   $('#downloadModel').addEventListener('click', downloadModel);
+  $('#prepareAiModel').addEventListener('click', prepareAiModel);
   $('#wbExport').addEventListener('click', exportCSV);
 
   chrome.storage.onChanged.addListener((ch, area) => {
@@ -63,7 +66,7 @@ function bind() {
 }
 
 function render() {
-  for (const key of ['enabled', 'hoverPause', 'blurJa']) $('#' + key).checked = !!settings[key];
+  for (const key of ['enabled', 'hoverPause', 'blurJa', 'aiNaturalTranslation']) $('#' + key).checked = !!settings[key];
   $('#bgOpacity').value = settings.bgOpacity;
   $('#geminiKey').value = settings.geminiKey || '';
   const mode = settings.learnMode ? 'learn' : (settings.subMode === 'both' ? 'ja' : settings.subMode);
@@ -113,11 +116,70 @@ async function downloadModel() {
   }
 }
 
+// ---------- AI自然訳モデル(LanguageModel / Gemini Nano) ----------
+const AI_CAPABILITY_OPTIONS = {
+  expectedInputs: [{ type: 'text', languages: ['en', 'ja'] }],
+  expectedOutputs: [{ type: 'text', languages: ['ja'] }],
+};
+
+async function refreshAiModelStatus() {
+  const st = $('#aiModelStatus'), btn = $('#prepareAiModel');
+  if (typeof LanguageModel === 'undefined') {
+    st.textContent = '⚠ AI自然訳はこのChromeで利用できません';
+    btn.classList.add('hidden');
+    return;
+  }
+  try {
+    const a = await LanguageModel.availability(AI_CAPABILITY_OPTIONS);
+    if (a === 'available') {
+      st.textContent = '✓ 解説用AIを自然訳にも利用できます';
+      btn.classList.add('hidden');
+    } else if (a === 'downloadable') {
+      st.textContent = 'AIモデル未準備';
+      btn.classList.remove('hidden');
+    } else if (a === 'downloading') {
+      st.textContent = 'AIモデルをダウンロード中…';
+      btn.classList.add('hidden');
+    } else {
+      st.textContent = '⚠ 日本語AI自然訳は利用できません';
+      btn.classList.add('hidden');
+    }
+  } catch (e) {
+    st.textContent = '⚠ AI状態取得エラー: ' + e.message;
+    btn.classList.add('hidden');
+  }
+}
+
+async function prepareAiModel() {
+  const st = $('#aiModelStatus'), btn = $('#prepareAiModel'), bar = $('#aiDlProgress');
+  btn.classList.add('hidden');
+  bar.classList.remove('hidden');
+  st.textContent = 'AIモデルを準備中…';
+  let session = null;
+  try {
+    session = await LanguageModel.create({
+      ...AI_CAPABILITY_OPTIONS,
+      monitor(m) {
+        m.addEventListener('downloadprogress', (e) => { bar.value = e.loaded; });
+      },
+    });
+    st.textContent = '✓ 解説用AIを自然訳にも利用できます';
+  } catch (e) {
+    st.textContent = '⚠ AIモデル準備失敗: ' + e.message;
+    btn.classList.remove('hidden');
+  } finally {
+    try { session?.destroy?.(); } catch (e) { /* best effort */ }
+    bar.classList.add('hidden');
+  }
+}
+
 async function refreshTrProgress() {
   const { trProgress } = await chrome.storage.local.get('trProgress');
   const elp = $('#trProgress');
   if (trProgress && trProgress.total && Date.now() - trProgress.at < 300000) {
-    elp.textContent = `このエピソード: ${trProgress.done}/${trProgress.total} セリフ翻訳済み`;
+    const ai = trProgress.aiEnabled
+      ? ` / AI自然訳 ${trProgress.aiDone || 0}/${trProgress.total}` : '';
+    elp.textContent = `このエピソード: 基本訳 ${trProgress.done}/${trProgress.total}${ai}`;
   } else {
     elp.textContent = '';
   }
